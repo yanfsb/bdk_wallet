@@ -7,7 +7,7 @@
 | D     | Distribution   | distribuição dos índices usados                         |
 | SG    | Stop gap       | quantidade de índices vazios usada pelo modelo stop-gap |
 
-Os números da seção seguinte são um exemplo didático pequeno (`LR = 30`), usado para explicar a construção das fixtures. A matriz medida pelo benchmark usa `LR = 100_000`, densidades nominais de `1%`, `5%`, `10%`, `25%`, `50%`, `75%` e `100%`, `L = 20` e `SG = 10`, nos perfis `gap_bounded` e `gap_unconstrained`.
+Os números da seção seguinte são um exemplo didático pequeno (`LR = 30`), usado para explicar a construção das fixtures. A matriz do benchmark solicita `LR = 100_000` e as densidades nominais de `1%`, `5%`, `10%`, `25%`, `50%`, `75%` e `100%`, com `L = 20` e `SG = 10`. O perfil `gap_unconstrained` inclui os sete pontos; no perfil `gap_bounded`, `1%` e `5%` são inviáveis e registrados como não aplicáveis.
 
 ## 1. Exemplo didático: preparação do cenário
 
