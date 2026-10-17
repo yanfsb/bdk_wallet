@@ -1,3 +1,5 @@
+// Mede apenas a restauração do indexer: estado sparse conhecido versus materialização dense; não inclui descoberta nem recuperação da wallet.
+
 use std::hint::black_box;
 
 use bdk_chain::{

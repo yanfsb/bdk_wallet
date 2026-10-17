@@ -1,3 +1,5 @@
+// Mede a recuperação offline da wallet: metadata versus descoberta stop-gap, incluindo criação da wallet e aplicação dos outputs.
+
 use std::{fs, hint::black_box, path::PathBuf};
 
 use bdk_chain::miniscript::{Descriptor, DescriptorPublicKey};
