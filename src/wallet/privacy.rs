@@ -23,7 +23,9 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use bitcoin::ScriptBuf;
+use rand_core::RngCore;
 
+use super::utils::shuffle_slice;
 use crate::WeightedUtxo;
 
 /// How coin selection treats several UTXOs that pay the same script.
@@ -63,17 +65,23 @@ pub struct DestinationGroup {
     pub utxos: Vec<WeightedUtxo>,
 }
 
-/// Group `utxos` by `scriptPubKey`, preserving first-seen order.
+/// Group `utxos` by `scriptPubKey`, preserving first-seen order after a shuffle.
+///
+/// Coins are shuffled before they are grouped. Bitcoin Core does this so a large
+/// set of outputs paying one destination is not chunked in wallet order, which
+/// could leak that order. See <https://github.com/bitcoin/bitcoin/pull/13808>,
+/// which followed the grouping added in
+/// <https://github.com/bitcoin/bitcoin/pull/12257>.
 ///
 /// Outputs that pay different scripts stay in different groups. Outputs that pay
-/// the same script stay in one group, in the order they appear in `utxos`.
-///
-/// This is the grouping step of <https://github.com/bitcoin/bitcoin/pull/12257>.
-/// Shuffling before the group, and the cap of 100 outputs per group, are applied
-/// by later changes in this module.
-pub fn group_by_destination(
+/// the same script stay in one group, in the order they are visited after the
+/// shuffle.
+pub fn group_by_destination<R: RngCore>(
     utxos: impl IntoIterator<Item = WeightedUtxo>,
+    rng: &mut R,
 ) -> Vec<DestinationGroup> {
+    let mut utxos: Vec<WeightedUtxo> = utxos.into_iter().collect();
+    shuffle_slice(&mut utxos, rng);
     let mut order: Vec<ScriptBuf> = Vec::new();
     let mut grouped: BTreeMap<ScriptBuf, Vec<WeightedUtxo>> = BTreeMap::new();
     for utxo in utxos {
@@ -124,10 +132,48 @@ mod tests {
     use bitcoin::hashes::Hash;
     use bitcoin::{Amount, OutPoint, TxOut, Txid, Weight};
     use chain::ChainPosition;
+    use rand_core::{Error as RngError, RngCore};
 
     use crate::{KeychainKind, LocalOutput, Utxo};
 
     use super::*;
+
+    /// Yields scripted `next_u32` values so shuffle positions are fixed.
+    struct SeqRng {
+        values: Vec<u32>,
+        index: usize,
+    }
+
+    impl RngCore for SeqRng {
+        fn next_u32(&mut self) -> u32 {
+            let value = self.values[self.index];
+            self.index += 1;
+            value
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            u64::from(self.next_u32())
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            for byte in dest.iter_mut() {
+                *byte = self.next_u32() as u8;
+            }
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), RngError> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
+    /// Draws that make [`shuffle_slice`] a no-op for `len` elements.
+    fn identity_draws(len: usize) -> Vec<u32> {
+        (1..len)
+            .rev()
+            .map(|current_index| current_index as u32)
+            .collect()
+    }
 
     fn p2wpkh_script(byte: u8) -> ScriptBuf {
         let mut raw = alloc::vec![0x00, 0x14];
@@ -159,11 +205,18 @@ mod tests {
     fn groups_utxos_that_share_a_script_pubkey() {
         let script_a = p2wpkh_script(0x11);
         let script_b = p2wpkh_script(0x22);
-        let groups = group_by_destination([
-            weighted_utxo(1, script_a.clone(), Amount::from_sat(100_000_000)),
-            weighted_utxo(2, script_b.clone(), Amount::from_sat(50_000_000)),
-            weighted_utxo(3, script_a.clone(), Amount::from_sat(50_000_000)),
-        ]);
+        let mut rng = SeqRng {
+            values: identity_draws(3),
+            index: 0,
+        };
+        let groups = group_by_destination(
+            [
+                weighted_utxo(1, script_a.clone(), Amount::from_sat(100_000_000)),
+                weighted_utxo(2, script_b.clone(), Amount::from_sat(50_000_000)),
+                weighted_utxo(3, script_a.clone(), Amount::from_sat(50_000_000)),
+            ],
+            &mut rng,
+        );
 
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].script_pubkey, script_a);
@@ -177,6 +230,36 @@ mod tests {
         );
         assert_eq!(groups[1].script_pubkey, script_b);
         assert_eq!(groups[1].utxos.len(), 1);
+    }
+
+    #[test]
+    fn shuffles_coins_before_grouping_them() {
+        let script_a = p2wpkh_script(0x11);
+        let script_b = p2wpkh_script(0x22);
+        // len 3: draw 0 swaps the last coin to the front, draw 1 leaves it there.
+        let mut rng = SeqRng {
+            values: vec![0, 1],
+            index: 0,
+        };
+        let groups = group_by_destination(
+            [
+                weighted_utxo(1, script_a.clone(), Amount::from_sat(1)),
+                weighted_utxo(2, script_a.clone(), Amount::from_sat(2)),
+                weighted_utxo(3, script_b.clone(), Amount::from_sat(3)),
+            ],
+            &mut rng,
+        );
+
+        assert_eq!(groups[0].script_pubkey, script_b);
+        assert_eq!(groups[1].script_pubkey, script_a);
+        assert_eq!(
+            groups[1]
+                .utxos
+                .iter()
+                .map(|utxo| utxo.utxo.outpoint().txid.to_byte_array()[0])
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
     }
 
     #[test]
@@ -196,12 +279,19 @@ mod tests {
     fn avoid_partial_spends_spends_the_whole_destination() {
         let script_a = p2wpkh_script(0xaa);
         let script_b = p2wpkh_script(0xbb);
-        let groups = group_by_destination([
-            weighted_utxo(1, script_a.clone(), Amount::from_btc(1.0).unwrap()),
-            weighted_utxo(2, script_a.clone(), Amount::from_btc(0.5).unwrap()),
-            weighted_utxo(3, script_b.clone(), Amount::from_btc(1.0).unwrap()),
-            weighted_utxo(4, script_b, Amount::from_btc(0.5).unwrap()),
-        ]);
+        let mut rng = SeqRng {
+            values: identity_draws(4),
+            index: 0,
+        };
+        let groups = group_by_destination(
+            [
+                weighted_utxo(1, script_a.clone(), Amount::from_btc(1.0).unwrap()),
+                weighted_utxo(2, script_a.clone(), Amount::from_btc(0.5).unwrap()),
+                weighted_utxo(3, script_b.clone(), Amount::from_btc(1.0).unwrap()),
+                weighted_utxo(4, script_b, Amount::from_btc(0.5).unwrap()),
+            ],
+            &mut rng,
+        );
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().all(|group| group.utxos.len() == 2));
         ensure_partial_spend_policy(PartialSpendPolicy::Always);
