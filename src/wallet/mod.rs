@@ -1289,6 +1289,7 @@ impl Wallet {
         rng: &mut impl RngCore,
     ) -> Result<Psbt, CreateTxError> {
         privacy::ensure_partial_spend_policy(params.partial_spend_policy);
+        privacy::ensure_output_type_mixing(params.output_type_mixing);
         let requirements = match params.condition {
             Some(condition) => condition,
             // Fall back to deriving the condition from the deprecated policy paths, to be removed
@@ -3244,6 +3245,7 @@ impl Wallet {
         rng: &mut impl RngCore,
     ) -> Result<(Psbt, Finalizer), CreatePsbtError> {
         privacy::ensure_partial_spend_policy(params.partial_spend_policy);
+        privacy::ensure_output_type_mixing(params.output_type_mixing);
         // Only permit no recipients if we're doing a sweep and an explicit change script is
         // provided.
         if params.recipients.is_empty()
@@ -3485,6 +3487,7 @@ impl Wallet {
         rng: &mut impl RngCore,
     ) -> Result<(Psbt, Finalizer), ReplaceByFeeError> {
         privacy::ensure_partial_spend_policy(params.partial_spend_policy);
+        privacy::ensure_output_type_mixing(params.output_type_mixing);
         if params.replace.is_empty() {
             return Err(ReplaceByFeeError::NoOriginalTransactions);
         }

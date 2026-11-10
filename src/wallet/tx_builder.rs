@@ -144,6 +144,7 @@ pub(crate) struct TxParams {
     pub(crate) current_height: Option<absolute::LockTime>,
     pub(crate) allow_dust: bool,
     pub(crate) partial_spend_policy: super::privacy::PartialSpendPolicy,
+    pub(crate) output_type_mixing: super::privacy::OutputTypeMixing,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -713,6 +714,32 @@ impl<'a, Cs> TxBuilder<'a, Cs> {
         policy: super::privacy::PartialSpendPolicy,
     ) -> &mut Self {
         self.params.partial_spend_policy = policy;
+        self
+    }
+
+    /// Avoid spending more than one output type in a single transaction.
+    ///
+    /// Bitcoin Core tries coin selection once per output type and keeps the
+    /// lowest-waste result, mixing types only when no single type can fund the
+    /// payment. A non-default type that can pay by itself is preferred, so the
+    /// odd coins are converted back to the wallet's usual type. This closes the
+    /// leak left after change outputs are forced to match a payment's type. See
+    /// <https://github.com/bitcoin/bitcoin/pull/24584> and
+    /// <https://github.com/bitcoin/bitcoin/pull/23789>.
+    ///
+    /// The same option exists on [`PsbtParams`] for the `create_psbt` path.
+    ///
+    /// # Panics
+    ///
+    /// [`OutputTypeMixing::Allow`] is the only value [`finish`](Self::finish)
+    /// accepts today. [`OutputTypeMixing::Avoid`] panics until selection can be
+    /// repeated per [`OutputType`].
+    ///
+    /// [`OutputTypeMixing`]: super::privacy::OutputTypeMixing
+    /// [`OutputType`]: super::privacy::OutputType
+    /// [`PsbtParams`]: crate::psbt::PsbtParams
+    pub fn output_type_mixing(&mut self, mixing: super::privacy::OutputTypeMixing) -> &mut Self {
+        self.params.output_type_mixing = mixing;
         self
     }
 

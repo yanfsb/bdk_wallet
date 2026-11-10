@@ -43,6 +43,8 @@ pub struct PsbtParams<C> {
     pub(crate) coin_selection: SelectionStrategy,
     /// Whether UTXOs that share a script are spent together.
     pub(crate) partial_spend_policy: crate::wallet::privacy::PartialSpendPolicy,
+    /// Whether coin selection may mix output types.
+    pub(crate) output_type_mixing: crate::wallet::privacy::OutputTypeMixing,
     /// Parameters for transaction canonicalization.
     pub(crate) canonical_params: CanonicalizationParams,
     /// UTXO filtering function.
@@ -90,6 +92,7 @@ impl Default for PsbtParams<CreateTx> {
             fee_rate: FeeRate::BROADCAST_MIN,
             coin_selection: Default::default(),
             partial_spend_policy: Default::default(),
+            output_type_mixing: Default::default(),
             canonical_params: Default::default(),
             utxo_filter: Default::default(),
             maturity_height: Default::default(),
@@ -234,6 +237,7 @@ impl PsbtParams<CreateTx> {
             fee_rate: self.fee_rate,
             coin_selection: self.coin_selection,
             partial_spend_policy: self.partial_spend_policy,
+            output_type_mixing: self.output_type_mixing,
             canonical_params: self.canonical_params,
             utxo_filter: self.utxo_filter,
             maturity_height: self.maturity_height,
@@ -373,6 +377,29 @@ impl<C> PsbtParams<C> {
         policy: crate::wallet::privacy::PartialSpendPolicy,
     ) -> &mut Self {
         self.partial_spend_policy = policy;
+        self
+    }
+
+    /// Avoid spending more than one output type in a single transaction.
+    ///
+    /// Bitcoin Core tries coin selection once per output type and keeps the
+    /// lowest-waste result, mixing types only when no single type can fund the
+    /// payment. See <https://github.com/bitcoin/bitcoin/pull/24584>.
+    ///
+    /// [`TxBuilder::output_type_mixing`](crate::wallet::tx_builder::TxBuilder::output_type_mixing)
+    /// sets the same option on the stable builder.
+    ///
+    /// # Panics
+    ///
+    /// [`OutputTypeMixing::Allow`](crate::wallet::privacy::OutputTypeMixing::Allow)
+    /// is the only value [`Wallet::create_psbt`](crate::Wallet::create_psbt) accepts
+    /// today. [`OutputTypeMixing::Avoid`](crate::wallet::privacy::OutputTypeMixing::Avoid)
+    /// panics until the selector is run once per output type.
+    pub fn output_type_mixing(
+        &mut self,
+        mixing: crate::wallet::privacy::OutputTypeMixing,
+    ) -> &mut Self {
+        self.output_type_mixing = mixing;
         self
     }
 

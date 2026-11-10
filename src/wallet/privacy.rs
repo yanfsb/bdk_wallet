@@ -22,7 +22,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use bitcoin::ScriptBuf;
+use bitcoin::{Script, ScriptBuf};
 use rand_core::RngCore;
 
 use super::utils::shuffle_slice;
@@ -112,6 +112,85 @@ pub fn group_by_destination<R: RngCore>(
     groups
 }
 
+/// Script-template class used when avoiding mixed input types.
+///
+/// Names follow Bitcoin Core's `OutputType` from
+/// <https://github.com/bitcoin/bitcoin/pull/24584>. P2WPKH and P2WSH are one
+/// class (`BECH32`); the change-matching work in
+/// <https://github.com/bitcoin/bitcoin/pull/23789> uses the same classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum OutputType {
+    /// P2PKH and P2PK. Core's `OutputType::LEGACY`.
+    Legacy,
+    /// P2SH. Core's `OutputType::P2SH_SEGWIT` for a wrapped-segwit destination.
+    /// The script pubkey does not reveal the redeem script.
+    P2sh,
+    /// Witness version 0: P2WPKH and P2WSH. Core's `OutputType::BECH32`.
+    Bech32,
+    /// Pay to taproot. Core's `OutputType::BECH32M`.
+    Bech32m,
+    /// `OP_RETURN`, bare multisig, and unknown witness versions, including
+    /// anchor (`P2A`) outputs.
+    Unknown,
+}
+
+/// Classify `script` the way Core classifies a destination for coin selection.
+pub fn output_type(script: &Script) -> OutputType {
+    if script.is_p2pkh() || script.is_p2pk() {
+        OutputType::Legacy
+    } else if script.is_p2sh() {
+        OutputType::P2sh
+    } else if script.is_p2wpkh() || script.is_p2wsh() {
+        OutputType::Bech32
+    } else if script.is_p2tr() {
+        OutputType::Bech32m
+    } else {
+        OutputType::Unknown
+    }
+}
+
+/// Whether coin selection may spend more than one [`OutputType`] in one tx.
+///
+/// After Core matches the change script to a payment
+/// (<https://github.com/bitcoin/bitcoin/pull/23789>), a later transaction can
+/// still reveal that change: a P2SH change output spent together with a bech32
+/// output, while both payments are bech32, points back at the P2SH output as
+/// the earlier change. Core avoids that by searching for a selection inside
+/// each output type and keeping the lowest-waste one, mixing types only when
+/// no single type can fund the payment. A non-default type that can pay by
+/// itself is preferred, so that type is converted back into the wallet's usual
+/// outputs. See <https://github.com/bitcoin/bitcoin/pull/24584>.
+///
+/// BDK's default stays [`OutputTypeMixing::Allow`], which is today's behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum OutputTypeMixing {
+    /// Spend whichever UTXOs coin selection picks, regardless of script type.
+    #[default]
+    Allow,
+    /// Search per [`OutputType`] and mix only as a fallback.
+    ///
+    /// Not applied yet: [`TxBuilder::finish`](super::tx_builder::TxBuilder::finish)
+    /// and `create_psbt` panic if this variant is set.
+    Avoid,
+}
+
+/// Panic unless `mixing` is [`OutputTypeMixing::Allow`].
+///
+/// Per-type selection has to run coin selection once per [`OutputType`], compare
+/// waste, and fall back to the full set. The in-tree branch-and-bound selector
+/// does not report waste, and the `bdk_tx` selector is not invoked per filtered
+/// candidate set yet.
+pub(crate) fn ensure_output_type_mixing(mixing: OutputTypeMixing) {
+    match mixing {
+        OutputTypeMixing::Allow => {}
+        OutputTypeMixing::Avoid => unimplemented!(
+            "per-output-type coin selection is not wired yet; see https://github.com/bitcoin/bitcoin/pull/24584"
+        ),
+    }
+}
+
 /// Panic unless `policy` is the historical [`PartialSpendPolicy::Off`].
 ///
 /// Grouped selection needs either the in-tree [`CoinSelectionAlgorithm`] or the
@@ -182,7 +261,7 @@ mod tests {
 
     fn p2wpkh_script(byte: u8) -> ScriptBuf {
         let mut raw = alloc::vec![0x00, 0x14];
-        raw.extend(core::iter::repeat(byte).take(20));
+        raw.extend(core::iter::repeat_n(byte, 20));
         ScriptBuf::from_bytes(raw)
     }
 
@@ -341,5 +420,64 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert!(groups.iter().all(|group| group.utxos.len() == 2));
         ensure_partial_spend_policy(PartialSpendPolicy::Always);
+    }
+
+    #[test]
+    fn classifies_scripts_the_way_core_classifies_output_types() {
+        use bitcoin::{PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash};
+
+        let p2pkh = ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0x11; 20]));
+        let mut p2pk = alloc::vec![0x21, 0x02];
+        p2pk.extend(core::iter::repeat_n(0x03, 32));
+        p2pk.push(0xac);
+        let p2pk = ScriptBuf::from_bytes(p2pk);
+        assert_eq!(output_type(&p2pkh), OutputType::Legacy);
+        assert_eq!(output_type(&p2pk), OutputType::Legacy);
+
+        let p2sh = ScriptBuf::new_p2sh(&ScriptHash::from_byte_array([0x22; 20]));
+        assert_eq!(output_type(&p2sh), OutputType::P2sh);
+
+        let p2wpkh = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0x33; 20]));
+        let p2wsh = ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array([0x44; 32]));
+        assert_eq!(output_type(&p2wpkh), OutputType::Bech32);
+        assert_eq!(output_type(&p2wsh), OutputType::Bech32);
+
+        let mut p2tr = alloc::vec![0x51, 0x20];
+        p2tr.extend(core::iter::repeat_n(0x55, 32));
+        assert_eq!(
+            output_type(&ScriptBuf::from_bytes(p2tr)),
+            OutputType::Bech32m
+        );
+
+        let op_return = ScriptBuf::from_bytes(alloc::vec![0x6a, 0x01, 0x00]);
+        assert_eq!(output_type(&op_return), OutputType::Unknown);
+        assert_eq!(output_type(&ScriptBuf::new()), OutputType::Unknown);
+    }
+
+    #[test]
+    fn allow_mixing_keeps_current_selection() {
+        ensure_output_type_mixing(OutputTypeMixing::Allow);
+    }
+
+    /// Alice holds bech32 coins and pays a P2SH address. Core then matches the
+    /// change type to that payment (<https://github.com/bitcoin/bitcoin/pull/23789>),
+    /// so the change is P2SH too. Her next payment is bech32. Spending the P2SH
+    /// coin together with a bech32 coin, while both outputs are bech32, marks the
+    /// P2SH input as the previous change.
+    ///
+    /// [`OutputTypeMixing::Avoid`] must fund that second payment from one output
+    /// type when either type is enough, prefer the non-default P2SH coin when it
+    /// can pay alone, and mix only when neither type is enough. See
+    /// <https://github.com/bitcoin/bitcoin/pull/24584>.
+    #[test]
+    #[ignore = "coin selection does not search per output type yet (bitcoin/bitcoin#24584)"]
+    fn avoid_mixing_output_types_prefers_one_type() {
+        use bitcoin::{ScriptHash, WPubkeyHash};
+
+        let bech32 = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0x33; 20]));
+        let p2sh = ScriptBuf::new_p2sh(&ScriptHash::from_byte_array([0x22; 20]));
+        assert_eq!(output_type(&bech32), OutputType::Bech32);
+        assert_eq!(output_type(&p2sh), OutputType::P2sh);
+        ensure_output_type_mixing(OutputTypeMixing::Avoid);
     }
 }
