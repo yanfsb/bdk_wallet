@@ -41,6 +41,8 @@ pub struct PsbtParams<C> {
     pub(crate) fee_rate: FeeRate,
     /// Coin selection strategy to use.
     pub(crate) coin_selection: SelectionStrategy,
+    /// Whether UTXOs that share a script are spent together.
+    pub(crate) partial_spend_policy: crate::wallet::privacy::PartialSpendPolicy,
     /// Parameters for transaction canonicalization.
     pub(crate) canonical_params: CanonicalizationParams,
     /// UTXO filtering function.
@@ -87,6 +89,7 @@ impl Default for PsbtParams<CreateTx> {
             change_script: Default::default(),
             fee_rate: FeeRate::BROADCAST_MIN,
             coin_selection: Default::default(),
+            partial_spend_policy: Default::default(),
             canonical_params: Default::default(),
             utxo_filter: Default::default(),
             maturity_height: Default::default(),
@@ -230,6 +233,7 @@ impl PsbtParams<CreateTx> {
             change_script: self.change_script,
             fee_rate: self.fee_rate,
             coin_selection: self.coin_selection,
+            partial_spend_policy: self.partial_spend_policy,
             canonical_params: self.canonical_params,
             utxo_filter: self.utxo_filter,
             maturity_height: self.maturity_height,
@@ -344,6 +348,31 @@ impl<C> PsbtParams<C> {
     /// Set the strategy to be used when selecting coins.
     pub fn coin_selection(&mut self, strategy: SelectionStrategy) -> &mut Self {
         self.coin_selection = strategy;
+        self
+    }
+
+    /// Spend outputs that share a script together.
+    ///
+    /// Bitcoin Core's `-avoidpartialspends` groups UTXOs by destination so a
+    /// reused address is not spent one output at a time. With the flag unset,
+    /// Core still tries the grouped selection when it does not raise the fee.
+    /// See <https://github.com/bitcoin/bitcoin/pull/12257> and
+    /// [`PartialSpendPolicy`](crate::wallet::privacy::PartialSpendPolicy).
+    ///
+    /// [`TxBuilder::partial_spend_policy`](crate::wallet::tx_builder::TxBuilder::partial_spend_policy)
+    /// sets the same option on the stable builder.
+    ///
+    /// # Panics
+    ///
+    /// [`PartialSpendPolicy::Off`](crate::wallet::privacy::PartialSpendPolicy::Off)
+    /// is the only value [`Wallet::create_psbt`](crate::Wallet::create_psbt) accepts
+    /// today. Any other policy panics until the `bdk_tx` selector can spend a
+    /// destination group as one candidate.
+    pub fn partial_spend_policy(
+        &mut self,
+        policy: crate::wallet::privacy::PartialSpendPolicy,
+    ) -> &mut Self {
+        self.partial_spend_policy = policy;
         self
     }
 

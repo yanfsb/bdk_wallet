@@ -59,6 +59,7 @@ pub mod locked_outpoints;
 pub mod migration;
 mod params;
 mod persisted;
+pub mod privacy;
 pub mod signer;
 pub mod tx_builder;
 pub(crate) mod utils;
@@ -1287,6 +1288,7 @@ impl Wallet {
         params: TxParams,
         rng: &mut impl RngCore,
     ) -> Result<Psbt, CreateTxError> {
+        privacy::ensure_partial_spend_policy(params.partial_spend_policy);
         let requirements = match params.condition {
             Some(condition) => condition,
             // Fall back to deriving the condition from the deprecated policy paths, to be removed
@@ -3241,6 +3243,7 @@ impl Wallet {
         mut params: PsbtParams<CreateTx>,
         rng: &mut impl RngCore,
     ) -> Result<(Psbt, Finalizer), CreatePsbtError> {
+        privacy::ensure_partial_spend_policy(params.partial_spend_policy);
         // Only permit no recipients if we're doing a sweep and an explicit change script is
         // provided.
         if params.recipients.is_empty()
@@ -3481,6 +3484,7 @@ impl Wallet {
         mut params: PsbtParams<ReplaceTx>,
         rng: &mut impl RngCore,
     ) -> Result<(Psbt, Finalizer), ReplaceByFeeError> {
+        privacy::ensure_partial_spend_policy(params.partial_spend_policy);
         if params.replace.is_empty() {
             return Err(ReplaceByFeeError::NoOriginalTransactions);
         }

@@ -143,6 +143,7 @@ pub(crate) struct TxParams {
     pub(crate) bumping_fee: Option<PreviousFee>,
     pub(crate) current_height: Option<absolute::LockTime>,
     pub(crate) allow_dust: bool,
+    pub(crate) partial_spend_policy: super::privacy::PartialSpendPolicy,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -686,6 +687,32 @@ impl<'a, Cs> TxBuilder<'a, Cs> {
     /// of an internal keychain, otherwise it has no effect.
     pub fn change_policy(&mut self, change_policy: ChangeSpendPolicy) -> &mut Self {
         self.params.change_policy = change_policy;
+        self
+    }
+
+    /// Spend outputs that share a script together.
+    ///
+    /// Bitcoin Core's `-avoidpartialspends` (off by default, with a fee-neutral
+    /// attempt even then) groups UTXOs by destination so a reused address is not
+    /// spent one output at a time. See
+    /// <https://github.com/bitcoin/bitcoin/pull/12257> and [`PartialSpendPolicy`].
+    ///
+    /// The same option exists on [`PsbtParams`] for the `create_psbt` path.
+    ///
+    /// # Panics
+    ///
+    /// [`PartialSpendPolicy::Off`] is the only value [`finish`](Self::finish)
+    /// accepts today. Any other policy panics until coin selection can spend a
+    /// [`DestinationGroup`] as one candidate.
+    ///
+    /// [`PartialSpendPolicy`]: super::privacy::PartialSpendPolicy
+    /// [`DestinationGroup`]: super::privacy::DestinationGroup
+    /// [`PsbtParams`]: crate::psbt::PsbtParams
+    pub fn partial_spend_policy(
+        &mut self,
+        policy: super::privacy::PartialSpendPolicy,
+    ) -> &mut Self {
+        self.params.partial_spend_policy = policy;
         self
     }
 
