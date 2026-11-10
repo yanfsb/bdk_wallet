@@ -707,6 +707,7 @@ impl<'a, Cs> TxBuilder<'a, Cs> {
     /// [`DestinationGroup`] as one candidate.
     ///
     /// [`PartialSpendPolicy`]: super::privacy::PartialSpendPolicy
+    /// [`PartialSpendPolicy::Off`]: super::privacy::PartialSpendPolicy::Off
     /// [`DestinationGroup`]: super::privacy::DestinationGroup
     /// [`PsbtParams`]: crate::psbt::PsbtParams
     pub fn partial_spend_policy(
@@ -736,6 +737,8 @@ impl<'a, Cs> TxBuilder<'a, Cs> {
     /// repeated per [`OutputType`].
     ///
     /// [`OutputTypeMixing`]: super::privacy::OutputTypeMixing
+    /// [`OutputTypeMixing::Allow`]: super::privacy::OutputTypeMixing::Allow
+    /// [`OutputTypeMixing::Avoid`]: super::privacy::OutputTypeMixing::Avoid
     /// [`OutputType`]: super::privacy::OutputType
     /// [`PsbtParams`]: crate::psbt::PsbtParams
     pub fn output_type_mixing(&mut self, mixing: super::privacy::OutputTypeMixing) -> &mut Self {
