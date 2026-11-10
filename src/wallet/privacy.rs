@@ -53,10 +53,19 @@ pub enum PartialSpendPolicy {
     Always,
 }
 
+/// Maximum outputs that share a destination inside one [`DestinationGroup`].
+///
+/// Bitcoin Core grouped at most 10 outputs, then raised the cap to 100 in
+/// <https://github.com/bitcoin/bitcoin/pull/18418>. A larger group spends a
+/// reused address in fewer transactions. It also raises the fee when
+/// `-avoidpartialspends` forces the whole group into the transaction.
+pub const OUTPUT_GROUP_MAX_ENTRIES: usize = 100;
+
 /// UTXOs that pay the same `scriptPubKey` and should be spent together.
 ///
-/// Built by [`group_by_destination`]. Coin selection does not consume this type
-/// yet.
+/// Built by [`group_by_destination`]. A single script is split into further
+/// groups once it reaches [`OUTPUT_GROUP_MAX_ENTRIES`]. Coin selection does not
+/// consume this type yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestinationGroup {
     /// Script every output in [`utxos`](Self::utxos) pays.
@@ -74,37 +83,33 @@ pub struct DestinationGroup {
 /// <https://github.com/bitcoin/bitcoin/pull/12257>.
 ///
 /// Outputs that pay different scripts stay in different groups. Outputs that pay
-/// the same script stay in one group, in the order they are visited after the
-/// shuffle.
+/// the same script share a group until it reaches [`OUTPUT_GROUP_MAX_ENTRIES`];
+/// further outputs of that script start another group. Within a group, outputs
+/// stay in the order they are visited after the shuffle.
 pub fn group_by_destination<R: RngCore>(
     utxos: impl IntoIterator<Item = WeightedUtxo>,
     rng: &mut R,
 ) -> Vec<DestinationGroup> {
     let mut utxos: Vec<WeightedUtxo> = utxos.into_iter().collect();
     shuffle_slice(&mut utxos, rng);
-    let mut order: Vec<ScriptBuf> = Vec::new();
-    let mut grouped: BTreeMap<ScriptBuf, Vec<WeightedUtxo>> = BTreeMap::new();
+    let mut groups: Vec<DestinationGroup> = Vec::new();
+    // Index of the open (not yet full) group for each script.
+    let mut open: BTreeMap<ScriptBuf, usize> = BTreeMap::new();
     for utxo in utxos {
         let script_pubkey = utxo.utxo.txout().script_pubkey.clone();
-        if let Some(group) = grouped.get_mut(&script_pubkey) {
-            group.push(utxo);
-        } else {
-            order.push(script_pubkey.clone());
-            grouped.insert(script_pubkey, alloc::vec![utxo]);
-        }
-    }
-    order
-        .into_iter()
-        .map(|script_pubkey| {
-            let utxos = grouped
-                .remove(&script_pubkey)
-                .expect("script was inserted when it was first seen");
-            DestinationGroup {
-                script_pubkey,
-                utxos,
+        if let Some(&index) = open.get(&script_pubkey) {
+            if groups[index].utxos.len() < OUTPUT_GROUP_MAX_ENTRIES {
+                groups[index].utxos.push(utxo);
+                continue;
             }
-        })
-        .collect()
+        }
+        open.insert(script_pubkey.clone(), groups.len());
+        groups.push(DestinationGroup {
+            script_pubkey,
+            utxos: alloc::vec![utxo],
+        });
+    }
+    groups
 }
 
 /// Panic unless `policy` is the historical [`PartialSpendPolicy::Off`].
@@ -259,6 +264,47 @@ mod tests {
                 .map(|utxo| utxo.utxo.outpoint().txid.to_byte_array()[0])
                 .collect::<Vec<_>>(),
             vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn caps_a_destination_at_100_outputs() {
+        let script = p2wpkh_script(0x44);
+        let one_hundred: Vec<_> = (0u8..100)
+            .map(|index| weighted_utxo(index, script.clone(), Amount::from_sat(1_000)))
+            .collect();
+        let mut rng = SeqRng {
+            values: identity_draws(one_hundred.len()),
+            index: 0,
+        };
+        let groups = group_by_destination(one_hundred, &mut rng);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].utxos.len(), OUTPUT_GROUP_MAX_ENTRIES);
+
+        let one_hundred_one: Vec<_> = (0u8..101)
+            .map(|index| weighted_utxo(index, script.clone(), Amount::from_sat(1_000)))
+            .collect();
+        let mut rng = SeqRng {
+            values: identity_draws(one_hundred_one.len()),
+            index: 0,
+        };
+        let groups = group_by_destination(one_hundred_one, &mut rng);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].script_pubkey, script);
+        assert_eq!(groups[1].script_pubkey, script);
+        assert_eq!(groups[0].utxos.len(), OUTPUT_GROUP_MAX_ENTRIES);
+        assert_eq!(groups[1].utxos.len(), 1);
+        assert_eq!(
+            groups[0].utxos[0].utxo.outpoint().txid.to_byte_array()[0],
+            0
+        );
+        assert_eq!(
+            groups[0].utxos[99].utxo.outpoint().txid.to_byte_array()[0],
+            99
+        );
+        assert_eq!(
+            groups[1].utxos[0].utxo.outpoint().txid.to_byte_array()[0],
+            100
         );
     }
 
